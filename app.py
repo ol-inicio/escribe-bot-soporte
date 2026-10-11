@@ -1,5 +1,7 @@
 import os
 import threading
+from collections import defaultdict, deque
+
 import requests
 from flask import Flask, request, jsonify
 from google import genai
@@ -7,17 +9,16 @@ from google.genai import types
 
 app = Flask(__name__)
 
-# timeout en milisegundos (10 segundos por modelo)
+# timeout en milisegundos (15 segundos por modelo)
 client = genai.Client(
     api_key=os.environ.get("GEMINI_API_KEY"),
-    http_options=types.HttpOptions(timeout=10000),
+    http_options=types.HttpOptions(timeout=15000),
 )
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = "grupo_ol_secreto"
 
-# El que funciona primero; los otros quedan de respaldo
 MODELOS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]
 
 INSTRUCCIONES = """Eres Luis Silva, técnico de soporte de TI de Grupo OL.
@@ -36,7 +37,9 @@ Reglas:
   indica que contacte al área de TI.
 - Termina con una pregunta corta de seguimiento."""
 
-procesados = set()  # ids de mensajes ya atendidos
+lock = threading.Lock()
+procesados = set()                              # ids ya atendidos
+historiales = defaultdict(lambda: deque(maxlen=6))  # últimos 6 mensajes por número
 
 
 def enviar_whatsapp(numero, texto):
@@ -57,23 +60,41 @@ def enviar_whatsapp(numero, texto):
         print(r.text, flush=True)
 
 
-def generar_respuesta(texto_usuario):
+def generar_respuesta(numero, texto_usuario):
     config = types.GenerateContentConfig(
         system_instruction=INSTRUCCIONES,
-        max_output_tokens=600,
+        max_output_tokens=3000,   # antes 600: el razonamiento también consume tokens
         temperature=0.4,
     )
+
+    with lock:
+        contenido = list(historiales[numero])
+    contenido.append({"role": "user", "parts": [{"text": texto_usuario}]})
+
     ultimo_error = None
     for nombre in MODELOS:
         try:
             print("PROBANDO MODELO:", nombre, flush=True)
             r = client.models.generate_content(
-                model=nombre,
-                contents=f"Mensaje del usuario: {texto_usuario}",
-                config=config,
+                model=nombre, contents=contenido, config=config
             )
+            texto = r.text
+            if not texto:
+                raise ValueError("Respuesta vacía")
+            try:
+                print("FIN:", r.candidates[0].finish_reason, flush=True)
+            except Exception:
+                pass
             print("MODELO USADO:", nombre, flush=True)
-            return r.text
+
+            with lock:
+                historiales[numero].append(
+                    {"role": "user", "parts": [{"text": texto_usuario}]}
+                )
+                historiales[numero].append(
+                    {"role": "model", "parts": [{"text": texto}]}
+                )
+            return texto
         except Exception as ex:
             print(f"FALLO MODELO {nombre}:", str(ex), flush=True)
             ultimo_error = ex
@@ -82,10 +103,8 @@ def generar_respuesta(texto_usuario):
 
 def atender_mensaje(numero, texto):
     try:
-        # Aviso inmediato para que el usuario sepa que lo recibimos
         enviar_whatsapp(numero, "⏳ Un momento, estoy analizando tu problema...")
-
-        respuesta = generar_respuesta(texto)[:4000]
+        respuesta = generar_respuesta(numero, texto)[:4000]
         enviar_whatsapp(numero, respuesta)
     except Exception as ex:
         print("ERROR AL ATENDER:", str(ex), flush=True)
@@ -132,9 +151,10 @@ def webhook():
 
                     if not (texto and numero):
                         continue
-                    if msg_id in procesados:
-                        continue
-                    procesados.add(msg_id)
+                    with lock:
+                        if msg_id in procesados:
+                            continue
+                        procesados.add(msg_id)
                     print("MENSAJE RECIBIDO:", numero, texto, flush=True)
 
                     threading.Thread(
