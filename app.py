@@ -53,7 +53,7 @@ def webhook():
                     continue
 
                 # Generar respuesta con Gemini
-                model = genai.GenerativeModel("gemini-2.5-flash")
+                model = genai.GenerativeModel("gemini-3.8-flash")
                 prompt = f"""
                 Eres Luis Silva, el asistente experto de soporte técnico de Grupo OL.
                 Responde de forma amable, clara y paso a paso al siguiente problema:
