@@ -7,27 +7,71 @@ from google.genai import types
 
 app = Flask(__name__)
 
-# timeout en milisegundos (20 segundos)
+# timeout en milisegundos (10 segundos por modelo)
 client = genai.Client(
     api_key=os.environ.get("GEMINI_API_KEY"),
-    http_options=types.HttpOptions(timeout=20000),
+    http_options=types.HttpOptions(timeout=10000),
 )
 
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = "grupo_ol_secreto"
 
-MODELOS = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash"]
+# El que funciona primero; los otros quedan de respaldo
+MODELOS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]
+
+INSTRUCCIONES = """Eres Luis Silva, técnico de soporte de TI de Grupo OL.
+Atiendes por WhatsApp a empleados que no son técnicos. Problemas típicos:
+PC lenta, Excel que se cuelga, PC que no enciende, impresoras, internet,
+correo, contraseñas.
+
+Reglas:
+- Español, tono amable y directo. Saluda en una sola línea.
+- Si el problema es ambiguo, haz UNA pregunta corta para entenderlo.
+- Si es claro, da de 3 a 5 pasos numerados, simples y seguros.
+- Formato WhatsApp: solo *negrita* con un asterisco. NO uses #, ### ni ---.
+- Máximo 800 caracteres.
+- No pidas contraseñas ni comandos peligrosos.
+- Si hay riesgo (olor a quemado, pérdida de datos, pantalla azul repetida),
+  indica que contacte al área de TI.
+- Termina con una pregunta corta de seguimiento."""
 
 procesados = set()  # ids de mensajes ya atendidos
 
 
-def generar_respuesta(prompt):
+def enviar_whatsapp(numero, texto):
+    url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": numero,
+        "type": "text",
+        "text": {"body": texto},
+    }
+    r = requests.post(url, json=payload, headers=headers, timeout=15)
+    print("RESPUESTA DE WHATSAPP:", r.status_code, flush=True)
+    if r.status_code != 200:
+        print(r.text, flush=True)
+
+
+def generar_respuesta(texto_usuario):
+    config = types.GenerateContentConfig(
+        system_instruction=INSTRUCCIONES,
+        max_output_tokens=600,
+        temperature=0.4,
+    )
     ultimo_error = None
     for nombre in MODELOS:
         try:
             print("PROBANDO MODELO:", nombre, flush=True)
-            r = client.models.generate_content(model=nombre, contents=prompt)
+            r = client.models.generate_content(
+                model=nombre,
+                contents=f"Mensaje del usuario: {texto_usuario}",
+                config=config,
+            )
             print("MODELO USADO:", nombre, flush=True)
             return r.text
         except Exception as ex:
@@ -38,29 +82,20 @@ def generar_respuesta(prompt):
 
 def atender_mensaje(numero, texto):
     try:
-        prompt = f"""
-        Eres Luis Silva, el asistente experto de soporte técnico de Grupo OL.
-        Responde de forma amable, clara y paso a paso al siguiente problema:
+        # Aviso inmediato para que el usuario sepa que lo recibimos
+        enviar_whatsapp(numero, "⏳ Un momento, estoy analizando tu problema...")
 
-        Problema: {texto}
-        """
-        respuesta_ia = generar_respuesta(prompt)[:4000]
-
-        url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
-        headers = {
-            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": numero,
-            "type": "text",
-            "text": {"body": respuesta_ia},
-        }
-        r = requests.post(url, json=payload, headers=headers, timeout=15)
-        print("RESPUESTA DE WHATSAPP:", r.status_code, r.text, flush=True)
+        respuesta = generar_respuesta(texto)[:4000]
+        enviar_whatsapp(numero, respuesta)
     except Exception as ex:
         print("ERROR AL ATENDER:", str(ex), flush=True)
+        try:
+            enviar_whatsapp(
+                numero,
+                "Disculpa, tuve un problema técnico. Intenta de nuevo en un momento 🙏",
+            )
+        except Exception:
+            pass
 
 
 @app.route("/", methods=["GET"])
@@ -86,7 +121,6 @@ def verify_webhook():
 def webhook():
     try:
         data = request.json or {}
-        print("WEBHOOK RECIBIDO:", data, flush=True)
 
         for e in data.get("entry", []):
             for c in e.get("changes", []):
@@ -99,11 +133,10 @@ def webhook():
                     if not (texto and numero):
                         continue
                     if msg_id in procesados:
-                        print("MENSAJE REPETIDO, SE IGNORA:", msg_id, flush=True)
                         continue
                     procesados.add(msg_id)
+                    print("MENSAJE RECIBIDO:", numero, texto, flush=True)
 
-                    # Se atiende en segundo plano para responderle a Meta ya
                     threading.Thread(
                         target=atender_mensaje, args=(numero, texto), daemon=True
                     ).start()
