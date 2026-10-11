@@ -20,6 +20,8 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = "grupo_ol_secreto"
 
+CORREO_CONTACTO = "TU_CORREO@empresa.com"   # <-- cámbialo por tu correo real
+
 MODELOS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]
 
 INSTRUCCIONES = """Eres Luis Silva, técnico de soporte de TI de Grupo OL.
@@ -140,6 +142,51 @@ def atender_mensaje(numero, texto):
 def home():
     return "¡El Bot de Soporte de Grupo OL está activo!", 200
 
+
+# ---------- Páginas requeridas por Meta ----------
+
+PAGINA_BASE = """<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{titulo}</title>
+<style>body{{font-family:Arial,sans-serif;max-width:720px;margin:40px auto;
+padding:0 16px;line-height:1.6;color:#222}}h1{{font-size:24px}}</style>
+</head><body>{cuerpo}</body></html>"""
+
+
+@app.route("/privacy", methods=["GET"])
+def privacy():
+    cuerpo = f"""
+    <h1>Política de privacidad - Soporte TI Grupo OL</h1>
+    <p><b>Qué datos recibimos:</b> los mensajes que envías por WhatsApp al
+    número de soporte y tu número de teléfono.</p>
+    <p><b>Para qué los usamos:</b> únicamente para brindarte soporte técnico.
+    Los mensajes se procesan con un servicio de inteligencia artificial para
+    generar respuestas.</p>
+    <p><b>Con quién se comparten:</b> con los proveedores necesarios para que
+    el servicio funcione: Meta (WhatsApp) y Google (procesamiento con IA).
+    No vendemos tus datos.</p>
+    <p><b>Conservación:</b> guardamos las conversaciones solo el tiempo
+    necesario para dar soporte.</p>
+    <p><b>Tus derechos:</b> puedes pedir que eliminemos tus datos. Mira
+    <a href="/delete-data">cómo hacerlo</a>.</p>
+    <p><b>Contacto:</b> Área de TI de Grupo OL - {CORREO_CONTACTO}</p>
+    <p>Última actualización: octubre de 2026</p>"""
+    return PAGINA_BASE.format(titulo="Política de privacidad", cuerpo=cuerpo), 200
+
+
+@app.route("/delete-data", methods=["GET"])
+def delete_data():
+    cuerpo = f"""
+    <h1>Eliminación de datos</h1>
+    <p>Para solicitar que eliminemos tus datos (mensajes y número de
+    teléfono), escribe a <b>{CORREO_CONTACTO}</b> indicando el número de
+    WhatsApp desde el que nos escribiste.</p>
+    <p>Atenderemos tu solicitud y la confirmaremos por el mismo medio.</p>"""
+    return PAGINA_BASE.format(titulo="Eliminación de datos", cuerpo=cuerpo), 200
+
+
+# ---------- Webhook de WhatsApp ----------
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
