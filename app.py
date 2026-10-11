@@ -1,22 +1,46 @@
 import os
 import requests
 from flask import Flask, request, jsonify
-import google.generativeai as genai
+from google import genai
 
 app = Flask(__name__)
 
-# Configuramos Gemini con la llave de entorno
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Credenciales y Token de verificación
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = "grupo_ol_secreto"
+
+# Se prueban en orden hasta que uno funcione
+MODELOS = ["gemini-3.8-flash", "gemini-flash-latest"]
+
+
+def generar_respuesta(prompt):
+    ultimo_error = None
+    for nombre in MODELOS:
+        try:
+            r = client.models.generate_content(model=nombre, contents=prompt)
+            print("MODELO USADO:", nombre)
+            return r.text
+        except Exception as ex:
+            print(f"FALLO MODELO {nombre}:", str(ex))
+            ultimo_error = ex
+    raise ultimo_error
 
 
 @app.route("/", methods=["GET"])
 def home():
     return "¡El Bot de Soporte de Grupo OL está activo!", 200
+
+
+@app.route("/modelos", methods=["GET"])
+def modelos():
+    # Sirve para ver qué modelos puede usar tu llave
+    try:
+        nombres = [m.name for m in client.models.list()]
+        return jsonify(nombres), 200
+    except Exception as ex:
+        return str(ex), 500
 
 
 @app.route("/webhook", methods=["GET"])
@@ -52,17 +76,14 @@ def webhook():
                 if not (texto and numero):
                     continue
 
-                # Generar respuesta con Gemini
-                model = genai.GenerativeModel("gemini-3.8-flash")
                 prompt = f"""
                 Eres Luis Silva, el asistente experto de soporte técnico de Grupo OL.
                 Responde de forma amable, clara y paso a paso al siguiente problema:
 
                 Problema: {texto}
                 """
-                respuesta_ia = model.generate_content(prompt).text
+                respuesta_ia = generar_respuesta(prompt)[:4000]
 
-                # Enviar la respuesta de vuelta a WhatsApp
                 url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
                 headers = {
                     "Authorization": f"Bearer {WHATSAPP_TOKEN}",
