@@ -1,4 +1,5 @@
 import os
+import time
 import threading
 from collections import defaultdict, deque
 
@@ -37,9 +38,19 @@ Reglas:
   indica que contacte al área de TI.
 - Termina con una pregunta corta de seguimiento."""
 
+PAUSA_SEGUNDOS = 2 * 60 * 60   # 2 horas sin IA cuando tú intervienes
+
 lock = threading.Lock()
-procesados = set()                              # ids ya atendidos
-historiales = defaultdict(lambda: deque(maxlen=6))  # últimos 6 mensajes por número
+procesados = set()                                   # ids ya atendidos
+historiales = defaultdict(lambda: deque(maxlen=6))   # últimos 6 mensajes por número
+pausados = {}                                        # numero -> hora hasta la que está pausada la IA
+ultimo_envio_bot = {}                                # numero -> hora del último envío del bot
+
+
+def esta_pausado(numero):
+    with lock:
+        hasta = pausados.get(numero)
+    return bool(hasta and time.time() < hasta)
 
 
 def enviar_whatsapp(numero, texto):
@@ -54,6 +65,8 @@ def enviar_whatsapp(numero, texto):
         "type": "text",
         "text": {"body": texto},
     }
+    with lock:
+        ultimo_envio_bot[numero] = time.time()
     r = requests.post(url, json=payload, headers=headers, timeout=15)
     print("RESPUESTA DE WHATSAPP:", r.status_code, flush=True)
     if r.status_code != 200:
@@ -63,7 +76,7 @@ def enviar_whatsapp(numero, texto):
 def generar_respuesta(numero, texto_usuario):
     config = types.GenerateContentConfig(
         system_instruction=INSTRUCCIONES,
-        max_output_tokens=3000,   # antes 600: el razonamiento también consume tokens
+        max_output_tokens=3000,   # el razonamiento del modelo también consume tokens
         temperature=0.4,
     )
 
@@ -105,6 +118,12 @@ def atender_mensaje(numero, texto):
     try:
         enviar_whatsapp(numero, "⏳ Un momento, estoy analizando tu problema...")
         respuesta = generar_respuesta(numero, texto)[:4000]
+
+        # Si tú intervienes mientras la IA pensaba, no se envía
+        if esta_pausado(numero):
+            print("PAUSADO, NO SE ENVÍA:", numero, flush=True)
+            return
+
         enviar_whatsapp(numero, respuesta)
     except Exception as ex:
         print("ERROR AL ATENDER:", str(ex), flush=True)
@@ -143,7 +162,28 @@ def webhook():
 
         for e in data.get("entry", []):
             for c in e.get("changes", []):
+                campo = c.get("field")
                 value = c.get("value", {})
+
+                # Mensajes que TÚ escribes desde la app (coexistencia)
+                if campo == "smb_message_echoes":
+                    print("ECHO RECIBIDO:", value, flush=True)
+                    for m in value.get("message_echoes", []):
+                        cliente = m.get("to", "")
+                        texto_echo = (m.get("text", {}).get("body", "") or "").strip().lower()
+                        with lock:
+                            reciente = time.time() - ultimo_envio_bot.get(cliente, 0) < 20
+                            if texto_echo == "/ia":
+                                pausados.pop(cliente, None)
+                                print("IA REACTIVADA:", cliente, flush=True)
+                            elif reciente:
+                                print("ECHO DEL PROPIO BOT, SE IGNORA:", cliente, flush=True)
+                            else:
+                                pausados[cliente] = time.time() + PAUSA_SEGUNDOS
+                                print("HUMANO INTERVIENE, IA PAUSADA:", cliente, flush=True)
+                    continue
+
+                # Mensajes de clientes
                 for msg in value.get("messages", []):
                     msg_id = msg.get("id")
                     numero = msg.get("from", "")
@@ -155,8 +195,12 @@ def webhook():
                         if msg_id in procesados:
                             continue
                         procesados.add(msg_id)
-                    print("MENSAJE RECIBIDO:", numero, texto, flush=True)
 
+                    if esta_pausado(numero):
+                        print("IA PAUSADA, NO RESPONDE:", numero, flush=True)
+                        continue
+
+                    print("MENSAJE RECIBIDO:", numero, texto, flush=True)
                     threading.Thread(
                         target=atender_mensaje, args=(numero, texto), daemon=True
                     ).start()
