@@ -8,7 +8,7 @@ app = Flask(__name__)
 # Configuramos Gemini con la llave de entorno
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Credenciales y Token de verificación (puedes inventar cualquier palabra aquí)
+# Credenciales y Token de verificación
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = "grupo_ol_secreto"
@@ -19,7 +19,6 @@ def home():
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
-    # Meta verifica el webhook usando un GET challenge
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -35,17 +34,19 @@ def verify_webhook():
 def webhook():
     try:
         data = request.json
+        print("WEBHOOK RECIBIDO:", data)
         
-        # Extraer mensaje de WhatsApp de forma segura
         entry = data.get("entry", [])
-        if entry:
-            changes = entry[0].get("changes", [])
-            if changes:
-                value = changes[0].get("value", [])
+        for e in entry:
+            changes = e.get("changes", [])
+            for c in changes:
+                value = c.get("value", {})
+                # Ojo: En la API de Meta, messages viene dentro de value
                 messages = value.get("messages", [])
                 if messages:
-                    mensaje_usuario = messages[0].get("text", {}).get("body", "")
-                    numero_remitente = messages[0].get("from", "")
+                    msg = messages[0]
+                    numero_remitente = msg.get("from", "")
+                    mensaje_usuario = msg.get("text", {}).get("body", "")
 
                     if mensaje_usuario and numero_remitente:
                         # Generar respuesta con Gemini
@@ -75,6 +76,7 @@ def webhook():
         return jsonify({"status": "success"}), 200
 
     except Exception as e:
+        print("ERROR:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
