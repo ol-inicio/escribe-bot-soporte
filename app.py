@@ -13,9 +13,11 @@ WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID")
 VERIFY_TOKEN = "grupo_ol_secreto"
 
+
 @app.route("/", methods=["GET"])
 def home():
     return "¡El Bot de Soporte de Grupo OL está activo!", 200
+
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -30,54 +32,57 @@ def verify_webhook():
             return "Token incorrecto", 403
     return "Parámetros inválidos", 400
 
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.json
         print("WEBHOOK RECIBIDO:", data)
-        
-        entry = data.get("entry", [])
-        for e in entry:
-            changes = e.get("changes", [])
-            for c in changes:
+
+        for e in data.get("entry", []):
+            for c in e.get("changes", []):
                 value = c.get("value", {})
-                # Ojo: En la API de Meta, messages viene dentro de value
                 messages = value.get("messages", [])
-                if messages:
-                    msg = messages[0]
-                    numero_remitente = msg.get("from", "")
-                    mensaje_usuario = msg.get("text", {}).get("body", "")
+                if not messages:
+                    continue
 
-                    if mensaje_usuario and numero_remitente:
-                        # Generar respuesta con Gemini
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                        prompt = f"""
-                        Eres Luis Silva, el asistente experto de soporte técnico de Grupo OL.
-                        Responde de forma amable, clara y paso a paso al siguiente problema:
-                        
-                        Problema: {mensaje_usuario}
-                        """
-                        response = model.generate_content(prompt)
-                        respuesta_ia = response.text
+                msg = messages[0]
+                numero = msg.get("from", "")
+                texto = msg.get("text", {}).get("body", "")
+                if not (texto and numero):
+                    continue
 
-                        # Enviar la respuesta de vuelta a WhatsApp
-                        url = f"https://graph.facebook.com/v18.0/{PHONE_NUMBER_ID}/messages"
-                        headers = {
-                            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-                            "Content-Type": "application/json"
-                        }
-                        payload = {
-                            "messaging_product": "whatsapp",
-                            "to": numero_remitente,
-                            "text": {"body": respuesta_ia}
-                        }
-                        requests.post(url, json=payload, headers=headers)
+                # Generar respuesta con Gemini
+                model = genai.GenerativeModel("gemini-2.5-flash")
+                prompt = f"""
+                Eres Luis Silva, el asistente experto de soporte técnico de Grupo OL.
+                Responde de forma amable, clara y paso a paso al siguiente problema:
+
+                Problema: {texto}
+                """
+                respuesta_ia = model.generate_content(prompt).text
+
+                # Enviar la respuesta de vuelta a WhatsApp
+                url = f"https://graph.facebook.com/v21.0/{PHONE_NUMBER_ID}/messages"
+                headers = {
+                    "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": numero,
+                    "type": "text",
+                    "text": {"body": respuesta_ia},
+                }
+                r = requests.post(url, json=payload, headers=headers)
+                print("RESPUESTA DE WHATSAPP:", r.status_code, r.text)
 
         return jsonify({"status": "success"}), 200
 
-    except Exception as e:
-        print("ERROR:", str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as ex:
+        print("ERROR:", str(ex))
+        return jsonify({"status": "error"}), 200
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
